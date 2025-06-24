@@ -21,3 +21,5 @@ Admin: 0x1804c8AB1F12E6bbf3894d4083f33e07309d1f38
 PErc20Delegate (Implementation) deployed at: 0x78B0f1E4ed8a17c7541EF954f046911E3E94566D
 ==== Deployment Complete ====
 PErc20Delegator (Proxy for pPUSD ) deployed at: 0xEDdC65ECaF2e67c301a01fDc1da6805084f621D0
+
+MockOracle: 0x82BF1C5516F6A91d4bF1E0aB62aF373dB049Df91

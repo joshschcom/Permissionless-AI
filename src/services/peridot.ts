@@ -8,9 +8,9 @@ const PTOKEN_ABI = [
   "function borrow(uint256 borrowAmount) external returns (uint256)",
   "function repayBorrow(uint256 repayAmount) external returns (uint256)",
   "function balanceOf(address owner) external view returns (uint256)",
-  "function balanceOfUnderlying(address owner) external returns (uint256)",
-  "function borrowBalanceCurrent(address account) external returns (uint256)",
-  "function exchangeRateCurrent() external returns (uint256)",
+  "function borrowBalanceStored(address account) external view returns (uint256)",
+  "function exchangeRateStored() external view returns (uint256)",
+  "function getAccountSnapshot(address account) external view returns (uint256, uint256, uint256, uint256)",
   "function getCash() external view returns (uint256)",
   "function totalBorrows() external view returns (uint256)",
   "function totalReserves() external view returns (uint256)",
@@ -32,7 +32,17 @@ export class PeridotService {
   private peridottrollerAddress: string;
 
   constructor(rpcUrl: string, peridottrollerAddress: string) {
-    this.provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+    // Configure provider with network details for BSC Testnet
+    this.provider = new ethers.providers.JsonRpcProvider(
+      {
+        url: rpcUrl,
+        timeout: 30000, // 30 second timeout
+      },
+      {
+        name: "bsc-testnet",
+        chainId: 97,
+      }
+    );
     this.peridottrollerAddress = peridottrollerAddress;
   }
 
@@ -57,17 +67,17 @@ export class PeridotService {
         pToken.totalBorrows(),
         pToken.totalReserves(),
         pToken.totalSupply(),
-        pToken.exchangeRateCurrent(),
+        pToken.exchangeRateStored(), // Use stored version - view only
         pToken.borrowRatePerBlock(),
         pToken.supplyRatePerBlock(),
       ]);
 
       return {
-        cash: ethers.utils.formatEther(cash),
-        totalBorrows: ethers.utils.formatEther(totalBorrows),
-        totalReserves: ethers.utils.formatEther(totalReserves),
-        totalSupply: ethers.utils.formatEther(totalSupply),
-        exchangeRate: ethers.utils.formatEther(exchangeRate),
+        cash: ethers.utils.formatEther(cash), // PUSD has 18 decimals (standard ERC20)
+        totalBorrows: ethers.utils.formatEther(totalBorrows), // PUSD has 18 decimals
+        totalReserves: ethers.utils.formatEther(totalReserves), // PUSD has 18 decimals
+        totalSupply: ethers.utils.formatUnits(totalSupply, 8), // pToken decimals
+        exchangeRate: ethers.utils.formatEther(exchangeRate), // Always 18 decimals (mantissa)
         borrowRatePerBlock: ethers.utils.formatUnits(borrowRate, 18),
         supplyRatePerBlock: ethers.utils.formatUnits(supplyRate, 18),
       };
@@ -84,16 +94,66 @@ export class PeridotService {
         this.provider
       );
 
-      const [balance, borrowBalance, underlyingBalance] = await Promise.all([
-        pToken.balanceOf(userAddress),
-        pToken.borrowBalanceCurrent(userAddress),
-        pToken.balanceOfUnderlying(userAddress),
-      ]);
+      // Use getAccountSnapshot for efficient data retrieval
+      // Returns: (error, pTokenBalance, borrowBalance, exchangeRateMantissa)
+      // Note: error = 0 means SUCCESS in Compound V2
+      const [error, pTokenBalance, borrowBalance, exchangeRateMantissa] =
+        await pToken.getAccountSnapshot(userAddress);
+
+      console.log(`getAccountSnapshot raw response:`, {
+        error: error.toString(),
+        errorType: typeof error,
+        pTokenBalance: pTokenBalance.toString(),
+        borrowBalance: borrowBalance.toString(),
+        exchangeRateMantissa: exchangeRateMantissa.toString(),
+      });
+
+      const errorCode = typeof error === "number" ? error : error.toNumber();
+      console.log(`Error code processed: ${errorCode}`);
+
+      if (errorCode !== 0) {
+        throw new Error(`getAccountSnapshot returned error code: ${errorCode}`);
+      }
+
+      // --- Major Assumption ---
+      // Based on observed behavior, `getAccountSnapshot` for this market returns
+      // the pToken balance in FULL TOKEN UNITS, not base units (wei).
+      // This is non-standard but required for the math to work as expected.
+      const pTokenBalanceFormatted = pTokenBalance.toString();
+
+      // Borrows are still assumed to be in wei (standard)
+      const borrowBalanceFormatted = ethers.utils.formatEther(borrowBalance);
+
+      // Exchange rate is always scaled by 1e18 (mantissa)
+      const exchangeRateFormatted =
+        ethers.utils.formatEther(exchangeRateMantissa);
+
+      // --- Calculation based on the assumption ---
+      // Formula: underlyingTokens = pTokenTokens * (exchangeRateMantissa / 1e18)
+      const underlyingBalanceRaw = pTokenBalance
+        .mul(exchangeRateMantissa)
+        .div(ethers.utils.parseEther("1"));
+
+      // The result is already in full token units for the underlying asset.
+      const underlyingBalance = underlyingBalanceRaw.toString();
+
+      console.log(
+        `Position calculation for ${userAddress} in ${pTokenAddress}:`,
+        {
+          pTokenBalanceRaw: pTokenBalance.toString(),
+          exchangeRateRaw: exchangeRateMantissa.toString(),
+          pTokenBalanceFormatted,
+          exchangeRateFormatted,
+          underlyingBalanceCalculated: underlyingBalance,
+          underlyingBalanceRaw: underlyingBalanceRaw.toString(),
+        }
+      );
 
       return {
-        pTokenBalance: ethers.utils.formatEther(balance),
-        borrowBalance: ethers.utils.formatEther(borrowBalance),
-        underlyingBalance: ethers.utils.formatEther(underlyingBalance),
+        pTokenBalance: pTokenBalanceFormatted,
+        borrowBalance: borrowBalanceFormatted,
+        underlyingBalance: underlyingBalance,
+        exchangeRate: exchangeRateFormatted,
       };
     } catch (error) {
       throw new Error(`Failed to get user position: ${error}`);
@@ -110,10 +170,13 @@ export class PeridotService {
       const [error, liquidity, shortfall] =
         await peridottroller.getAccountLiquidity(userAddress);
 
+      // Based on on-chain tests, this contract returns liquidity as a raw integer
+      // representing the dollar value, NOT a standard wei-formatted value.
+      // Therefore, we just need to convert it to a string.
       return {
         error: error.toString(),
-        liquidity: ethers.utils.formatEther(liquidity),
-        shortfall: ethers.utils.formatEther(shortfall),
+        liquidity: liquidity.toString(),
+        shortfall: shortfall.toString(),
       };
     } catch (error) {
       throw new Error(`Failed to get account liquidity: ${error}`);
@@ -178,6 +241,18 @@ export class PeridotService {
       return (totalBorrows / (totalBorrows + totalCash)) * 100;
     } catch (error) {
       throw new Error(`Failed to calculate utilization rate: ${error}`);
+    }
+  }
+
+  // Test network connectivity
+  async testConnection(): Promise<boolean> {
+    try {
+      await this.provider.getNetwork();
+      await this.provider.getBlockNumber();
+      return true;
+    } catch (error) {
+      console.error("Peridot service network connection test failed:", error);
+      return false;
     }
   }
 }

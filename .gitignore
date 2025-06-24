@@ -161,3 +161,6 @@ secrets/
 *.pem
 *.key
 wallet.json 
+
+QUICKSTART.md
+instructions.md

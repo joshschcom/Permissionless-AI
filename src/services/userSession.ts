@@ -1,6 +1,20 @@
+import { v4 as uuidv4 } from "uuid";
+
 interface UserSession {
+  sessionId: string;
   userId: number;
   walletAddress?: string;
+  createdAt: Date;
+  lastInteraction: Date;
+  onboardingStage?:
+    | "asked_finance"
+    | "asked_crypto"
+    | "asked_strategy"
+    | "wallet_choice"
+    | "done";
+  financeKnowledge?: "none" | "bit" | "lot";
+  cryptoExperience?: "none" | "bit" | "lot";
+  cryptoStrategy?: string;
   lastActivity: Date;
   preferences: {
     defaultMarket?: string;
@@ -11,13 +25,19 @@ interface UserSession {
   activeAlerts: string[];
 }
 
+const SESSION_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 export class UserSessionService {
   private sessions: Map<number, UserSession> = new Map();
 
   getSession(userId: number): UserSession {
     if (!this.sessions.has(userId)) {
-      this.sessions.set(userId, {
+      const session: UserSession = {
+        sessionId: uuidv4(),
         userId,
+        createdAt: new Date(),
+        lastInteraction: new Date(),
+        onboardingStage: "asked_finance",
         lastActivity: new Date(),
         preferences: {
           riskTolerance: "medium",
@@ -25,22 +45,26 @@ export class UserSessionService {
           preferredChain: "arbitrum-sepolia",
         },
         activeAlerts: [],
-      });
+      };
+      this.sessions.set(userId, session);
     }
 
     const session = this.sessions.get(userId)!;
+    session.lastInteraction = new Date();
     session.lastActivity = new Date();
     return session;
   }
 
   updateSession(userId: number, updates: Partial<UserSession>): void {
     const session = this.getSession(userId);
-    Object.assign(session, updates, { lastActivity: new Date() });
+    Object.assign(session, updates, { lastInteraction: new Date() });
     this.sessions.set(userId, session);
   }
 
   setWallet(userId: number, address: string): void {
-    this.updateSession(userId, { walletAddress: address });
+    const session = this.getSession(userId);
+    session.walletAddress = address;
+    this.sessions.set(userId, session);
   }
 
   getWallet(userId: number): string | undefined {
@@ -79,13 +103,36 @@ export class UserSessionService {
     return this.getSession(userId).activeAlerts;
   }
 
+  getOnboardingStage(userId: number): UserSession["onboardingStage"] {
+    return this.getSession(userId).onboardingStage;
+  }
+
+  setOnboardingStage(userId: number, stage: UserSession["onboardingStage"]) {
+    const session = this.getSession(userId);
+    session.onboardingStage = stage;
+    this.sessions.set(userId, session);
+  }
+
+  setUserKnowledge(
+    userId: number,
+    knowledge: {
+      financeKnowledge?: UserSession["financeKnowledge"];
+      cryptoExperience?: UserSession["cryptoExperience"];
+      cryptoStrategy?: UserSession["cryptoStrategy"];
+    }
+  ) {
+    const session = this.getSession(userId);
+    Object.assign(session, knowledge);
+    this.sessions.set(userId, session);
+  }
+
   // Clean up old inactive sessions (older than 30 days)
   cleanupOldSessions(): void {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
     for (const [userId, session] of this.sessions.entries()) {
-      if (session.lastActivity < thirtyDaysAgo) {
+      if (session.lastInteraction < thirtyDaysAgo) {
         this.sessions.delete(userId);
       }
     }
@@ -105,7 +152,7 @@ export class UserSessionService {
     let usersWithWallets = 0;
 
     for (const session of this.sessions.values()) {
-      if (session.lastActivity > sevenDaysAgo) {
+      if (session.lastInteraction > sevenDaysAgo) {
         activeUsers++;
       }
       if (session.walletAddress) {

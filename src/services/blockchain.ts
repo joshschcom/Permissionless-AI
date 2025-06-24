@@ -4,7 +4,17 @@ export class BlockchainService {
   private provider: ethers.providers.JsonRpcProvider;
 
   constructor(rpcUrl: string) {
-    this.provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+    // Configure provider with network details for BSC Testnet
+    this.provider = new ethers.providers.JsonRpcProvider(
+      {
+        url: rpcUrl,
+        timeout: 30000, // 30 second timeout
+      },
+      {
+        name: "bsc-testnet",
+        chainId: 97,
+      }
+    );
   }
 
   async getBalance(address: string): Promise<string> {
@@ -17,7 +27,11 @@ export class BlockchainService {
   }
 
   async getBlockNumber(): Promise<number> {
-    return await this.provider.getBlockNumber();
+    try {
+      return await this.provider.getBlockNumber();
+    } catch (error) {
+      throw new Error(`Failed to get block number: ${error}`);
+    }
   }
 
   async isValidAddress(address: string): Promise<boolean> {
@@ -30,6 +44,18 @@ export class BlockchainService {
       return ethers.utils.formatUnits(gasPrice, "gwei");
     } catch (error) {
       throw new Error(`Failed to get gas price: ${error}`);
+    }
+  }
+
+  // Test network connectivity
+  async testConnection(): Promise<boolean> {
+    try {
+      await this.provider.getNetwork();
+      await this.provider.getBlockNumber();
+      return true;
+    } catch (error) {
+      console.error("Network connection test failed:", error);
+      return false;
     }
   }
 
